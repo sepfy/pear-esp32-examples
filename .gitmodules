@@ -1,0 +1,6 @@
+[submodule "components/pear/pear"]
+	path = components/pear/pear
+	url = https://github.com/sepfy/pear.git
+[submodule "components/srtp"]
+	path = components/srtp
+	url = https://github.com/sepfy/esp_ports.git
