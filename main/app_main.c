@@ -8,6 +8,7 @@
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_mac.h"
 #include "mdns.h"
 
 #include "esp_log.h"
@@ -33,6 +34,7 @@ extern void wifi_init_sta();
 
 static char remote_description[2048];
 char base64_str[2048];
+char deviceid[32] = {0};
 
 static const char *pcRemoteDescription = NULL;
 static const char *pcLocalDescription = NULL;
@@ -40,9 +42,6 @@ static PeerConnectionState eState = PEER_CONNECTION_CLOSED;
 
 PeerConnection *g_pc;
 int gDataChannelOpened = 0;
-
-const char subtopic[] = "webrtc/hello666/jsonrpc";
-const char device_id[] = "hello666";
 
 #if CONFIG_BROKER_CERTIFICATE_OVERRIDDEN == 1
 static const uint8_t mqtt_eclipseprojects_io_pem_start[]  = "-----BEGIN CERTIFICATE-----\n" CONFIG_BROKER_CERTIFICATE_OVERRIDE "\n-----END CERTIFICATE-----";
@@ -92,11 +91,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
   esp_mqtt_event_handle_t event = event_data;
   esp_mqtt_client_handle_t client = event->client;
   int msg_id;
+  char topic[64] = {0};
 
   switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
       ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-      msg_id = esp_mqtt_client_subscribe(client, subtopic, 0);
+      snprintf(topic, sizeof(topic), "webrtc/%s/jsonrpc", deviceid);
+      msg_id = esp_mqtt_client_subscribe(client, topic, 0);
       ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
       break;
     case MQTT_EVENT_DISCONNECTED:
@@ -104,6 +105,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
       break;
     case MQTT_EVENT_SUBSCRIBED:
       ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+      ESP_LOGI(TAG, "open browser and visit https://sepfy.github.io/webrtc?deviceId=%s", deviceid);
       break;
     case MQTT_EVENT_UNSUBSCRIBED:
       ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
@@ -127,7 +129,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         cJSON_AddStringToObject(response, "result", base64_str);
         cJSON_AddNumberToObject(response, "id", 1);
         char *response_str = cJSON_PrintUnformatted(response);
-        esp_mqtt_client_publish(client, "webrtc/hello666/jsonrpc-reply", response_str, 0, 0, 0);
+        snprintf(topic, sizeof(topic), "webrtc/%s/jsonrpc-reply", deviceid);
+        esp_mqtt_client_publish(client, topic, response_str, 0, 0, 0);
         free(response_str);
         cJSON_Delete(response);
         pcLocalDescription = NULL;
@@ -206,12 +209,14 @@ void peer_connection_task(void *arg) {
 
     peer_connection_loop(g_pc);
 
-    vTaskDelay(pdMS_TO_TICKS(5));
+    vTaskDelay(pdMS_TO_TICKS(1));
 
   }
 }
 
 void app_main(void) {
+
+    uint8_t mac[8] = {0};
 
     PeerOptions options = {0};
 
@@ -232,6 +237,11 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(mdns_init());
 
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+      sprintf(deviceid, "esp32-%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      ESP_LOGI(TAG, "Device ID: %s", deviceid);
+    }
+
     wifi_init_sta();
 
     g_pc = (PeerConnection*)malloc(sizeof(PeerConnection));
@@ -249,7 +259,7 @@ void app_main(void) {
 
     xTaskCreatePinnedToCore(camera_task, "camera", 4096, NULL, 6, &xCameraTaskHandle, 0);
 
-    xTaskCreatePinnedToCore(peer_connection_task, "peer_connection", 10240, NULL, 5, &xPcTaskHandle, 1);
+    xTaskCreatePinnedToCore(peer_connection_task, "peer_connection", 10240, NULL, 10, &xPcTaskHandle, 1);
 
     mqtt_app_start();
 
