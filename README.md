@@ -21,6 +21,8 @@ $ source export.sh
 ```bash
 $ git clone https://github.com/sepfy/pear-esp32-examples.git
 $ cd pear-esp32-examples
+$ idf.py add-dependency "espressif/esp32-camera^2.0.4"
+$ idf.py add-dependency "mdns"
 $ git submodule init && git submodule update
 $ cd components/srtp
 $ git submodule init && git submodule update
