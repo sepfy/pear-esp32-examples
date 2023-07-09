@@ -32,14 +32,13 @@ extern esp_err_t camera_init();
 extern void camera_task(void *pvParameters);
 extern void wifi_init_sta();
 
-static char remote_description[2048];
-char base64_str[2048];
 char deviceid[32] = {0};
 
-static const char *pcRemoteDescription = NULL;
+static char *pcEncodedRemoteDescription = NULL;
+static char *pcRemoteDescription = NULL;
 static const char *pcLocalDescription = NULL;
-static PeerConnectionState eState = PEER_CONNECTION_CLOSED;
 
+static PeerConnectionState eState = PEER_CONNECTION_CLOSED;
 PeerConnection *g_pc;
 int gDataChannelOpened = 0;
 
@@ -50,39 +49,46 @@ extern const uint8_t mqtt_eclipseprojects_io_pem_start[]   asm("_binary_mqtt_ecl
 #endif
 extern const uint8_t mqtt_eclipseprojects_io_pem_end[]   asm("_binary_mqtt_eclipseprojects_io_pem_end");
 
-static void handle_mqtt_data(const char *payload, int len) {
+static int handle_mqtt_data(const char *payload, int len) {
 
   cJSON *root = cJSON_Parse(payload);
   if (root == NULL) {
     ESP_LOGE(TAG, "JSON Parse Error");
-    return;
+    return -1;
   }
 
   cJSON *method = cJSON_GetObjectItem(root, "method");
   if (method == NULL || method->type != cJSON_String) {
     ESP_LOGE(TAG, "JSON Parse Error");
-    return;
+    return -1;
+  }
+
+  cJSON *id = cJSON_GetObjectItem(root, "id");
+
+  if (id == NULL || id->type != cJSON_Number) {
+    ESP_LOGE(TAG, "JSON Parse Error");
+    return -1;
   }
 
   if (strcmp(method->valuestring, "request_offer") == 0) {
 
     ESP_LOGI(TAG, "peer_connection_create_offer");
+    gDataChannelOpened = 0;
     peer_connection_create_offer(g_pc);
 
     vTaskDelay(pdMS_TO_TICKS(1000));
 
   } else if (strcmp(method->valuestring, "response_answer") == 0) {
 
-    memset(remote_description, 0, sizeof(remote_description));
+    memset(pcRemoteDescription, 0, 2048);
     char *base64_str = cJSON_GetObjectItem(root, "params")->valuestring;
-    base64_decode(base64_str, strlen(base64_str), (unsigned char *)remote_description, sizeof(remote_description));
-    pcRemoteDescription = remote_description;
-    printf("remote description: %s\n", remote_description);
+    base64_decode(base64_str, strlen(base64_str), (unsigned char *)pcRemoteDescription, 2048);
+    printf("remote description: %s\n", pcRemoteDescription);
     peer_connection_set_remote_description(g_pc, pcRemoteDescription);
   }
 
   cJSON_Delete(root);
-
+  return id->valueint;
 }
 
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -92,6 +98,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
   esp_mqtt_client_handle_t client = event->client;
   int msg_id;
   char topic[64] = {0};
+  int id;
+  char *response_str;
 
   switch ((esp_mqtt_event_id_t)event_id) {
     case MQTT_EVENT_CONNECTED:
@@ -119,22 +127,25 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
       //printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
       //printf("DATA=%.*s\r\n", event->data_len, event->data);
-      handle_mqtt_data(event->data, event->data_len);
+      id = handle_mqtt_data(event->data, event->data_len);
+
+      cJSON *response = cJSON_CreateObject();
+      cJSON_AddStringToObject(response, "jsonrpc", "2.0");
+      cJSON_AddNumberToObject(response, "id", id);
 
       if (pcLocalDescription != NULL) {
 
-        base64_encode((const unsigned char*)pcLocalDescription, strlen(pcLocalDescription), base64_str, sizeof(base64_str));
-        cJSON *response = cJSON_CreateObject();
-        cJSON_AddStringToObject(response, "jsonrpc", "2.0");
-        cJSON_AddStringToObject(response, "result", base64_str);
-        cJSON_AddNumberToObject(response, "id", 1);
-        char *response_str = cJSON_PrintUnformatted(response);
-        snprintf(topic, sizeof(topic), "webrtc/%s/jsonrpc-reply", deviceid);
-        esp_mqtt_client_publish(client, topic, response_str, 0, 0, 0);
-        free(response_str);
-        cJSON_Delete(response);
+        base64_encode((const unsigned char*)pcLocalDescription, strlen(pcLocalDescription), pcEncodedRemoteDescription, 2048);
+        cJSON_AddStringToObject(response, "result", pcEncodedRemoteDescription);
         pcLocalDescription = NULL;
       }
+ 
+      response_str = cJSON_PrintUnformatted(response);
+      snprintf(topic, sizeof(topic), "webrtc/%s/jsonrpc-reply", deviceid);
+      esp_mqtt_client_publish(client, topic, response_str, 0, 0, 0);
+      free(response_str);
+      cJSON_Delete(response);
+
       break;
 
     case MQTT_EVENT_ERROR:
@@ -210,7 +221,6 @@ void peer_connection_task(void *arg) {
     peer_connection_loop(g_pc);
 
     vTaskDelay(pdMS_TO_TICKS(1));
-
   }
 }
 
@@ -218,7 +228,7 @@ void app_main(void) {
 
     uint8_t mac[8] = {0};
 
-    PeerOptions options = {0};
+    PeerOptions options = { .datachannel = 1, .audio_codec = CODEC_PCMA };
 
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
@@ -244,9 +254,11 @@ void app_main(void) {
 
     wifi_init_sta();
 
+    pcRemoteDescription = (char*)malloc(2048);
+    pcEncodedRemoteDescription = (char*)malloc(2048);
+
     g_pc = (PeerConnection*)malloc(sizeof(PeerConnection));
-    options.b_datachannel = 1;
-    options.audio_codec = CODEC_PCMA;
+
     peer_connection_configure(g_pc, &options);
     peer_connection_init(g_pc);
     peer_connection_onicecandidate(g_pc, on_icecandidate);
@@ -255,11 +267,11 @@ void app_main(void) {
 
     camera_init();
 
-//    xTaskCreate(audio_task, "audio", 2048, NULL, 5, &xAudioTaskHandle);
+    //xTaskCreate(audio_task, "audio", 2048, NULL, 5, &xAudioTaskHandle);
 
     xTaskCreatePinnedToCore(camera_task, "camera", 4096, NULL, 6, &xCameraTaskHandle, 0);
 
-    xTaskCreatePinnedToCore(peer_connection_task, "peer_connection", 10240, NULL, 10, &xPcTaskHandle, 1);
+    xTaskCreatePinnedToCore(peer_connection_task, "peer_connection", 8096, NULL, 10, &xPcTaskHandle, 1);
 
     mqtt_app_start();
 
