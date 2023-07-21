@@ -53,7 +53,7 @@ static camera_config_t camera_config = {
     .pin_reset = CAM_PIN_RESET,
     .xclk_freq_hz = 20000000,
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_QVGA,
+    .frame_size = FRAMESIZE_VGA,
     .jpeg_quality = 12,
     .fb_count = 2,
     .grab_mode = CAMERA_GRAB_WHEN_EMPTY
@@ -81,11 +81,24 @@ esp_err_t camera_init(){
     return ESP_OK;
 }
 
+int64_t camera_get_timestamp() {
+
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (tv.tv_sec * 1000LL + (tv.tv_usec / 1000LL));
+}
+
 void camera_task(void *pvParameters) {
+
+  static int fps = 0;
+  static int16_t last_time;
+  int16_t curr_time;
 
   camera_fb_t * fb = NULL;
 
   ESP_LOGI(TAG, "Camera Task Started");
+
+  last_time = camera_get_timestamp();
 
   for(;;) {
 
@@ -98,14 +111,23 @@ void camera_task(void *pvParameters) {
         ESP_LOGE(TAG, "Camera capture failed");
       }
 
-      ESP_LOGI(TAG, "Camera captured. size=%zu, timestamp=%llu", fb->len, fb->timestamp);
-
+      //ESP_LOGI(TAG, "Camera captured. size=%zu, timestamp=%llu", fb->len, fb->timestamp);
       peer_connection_datachannel_send_binary(g_pc, (char*)fb->buf, fb->len);
+
+      fps++;
+
+      if ((fps % 100) == 0) {
+
+        curr_time = camera_get_timestamp();
+        ESP_LOGI(TAG, "Camera FPS=%.2f", 1000.0f / (float)(curr_time - last_time) * 100.0f);
+        last_time = curr_time;
+      }
 
       esp_camera_fb_return(fb);
     }
 
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    // 20 FPS
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 
 }
