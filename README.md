@@ -1,4 +1,7 @@
 # pear-esp32-examples
+
+<b> The project will be closed and will be part of [libpeer](https://github.com/sepfy/libpeer/tree/main/examples/esp32) </b>
+
 Stream JPEG over WebRTC datachannel with ESP32-EYE.
 
 ## Hardware
